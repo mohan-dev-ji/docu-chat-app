@@ -8,7 +8,7 @@
         <div class="column files-column">
             <h2>Files</h2>
             <h3>Upload a new PDF</h3>
-            <form method="post" enctype="multipart/form-data">
+            <form action="{{ url_for('main.upload_pdf') }}" method="post" enctype="multipart/form-data">
                 <input type="file" name="pdf_file" accept=".pdf">
                 <input type="submit" value="Upload">
             </form>
@@ -39,8 +39,11 @@
         
         <div class="column chat-column">
             <h2>Chat</h2>
-            <!-- Placeholder for chat functionality -->
-            <p>Chat functionality will be implemented here.</p>
+            <div id="chat-messages"></div>
+            <form id="chat-form">
+                <input type="text" id="chat-input" placeholder="Type your message...">
+                <button type="submit">Send</button>
+            </form>
         </div>
     </div>
     
@@ -97,6 +100,39 @@
     .chat-column {
         flex-basis: 40%;
     }
+
+    #chat-messages {
+        height: 300px;
+        overflow-y: auto;
+        border: 1px solid #ccc;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+
+    #chat-messages div {
+        margin-bottom: 10px;
+        padding: 5px;
+        border-radius: 5px;
+    }
+
+    #chat-messages .user {
+        background-color: #e6f2ff;
+        text-align: right;
+    }
+
+    #chat-messages .ai {
+        background-color: #f0f0f0;
+        text-align: left;
+    }
+
+    #chat-form {
+        display: flex;
+    }
+
+    #chat-input {
+        flex-grow: 1;
+        margin-right: 10px;
+    }
 </style>
 {% endblock %}
 
@@ -106,27 +142,39 @@
     document.addEventListener('DOMContentLoaded', function() {
         const pdfLinks = document.querySelectorAll('.pdf-link');
         const pdfViewer = document.getElementById('pdf-viewer');
+        const chatForm = document.getElementById('chat-form');
+        const chatInput = document.getElementById('chat-input');
+        const chatMessages = document.getElementById('chat-messages');
 
         pdfLinks.forEach(link => {
             link.addEventListener('click', function(e) {
                 e.preventDefault();
                 const pdfId = this.getAttribute('data-pdf-id');
-                console.log('PDF clicked:', pdfId);
-                loadPDF(pdfId);
+                loadPDF(pdfId) // new function
+                processPDF(pdfId);
             });
         });
 
+        chatForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const message = chatInput.value.trim();
+            if (message) {
+                addMessage('user', message);
+                chatInput.value = '';
+                queryPDF(message);
+            }
+        });
+
+
+        //////////// load PDF //////////
         function loadPDF(pdfId) {
             const url = `/pdf/${pdfId}`;
             console.log('Loading PDF from URL:', url);
-            
-            // Load the PDF document
+
             pdfjsLib.getDocument(url).promise.then(function(pdf) {
                 console.log('PDF loaded successfully');
-                // Clear the viewer
                 pdfViewer.innerHTML = '';
 
-                // Render each page
                 for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                     pdf.getPage(pageNum).then(function(page) {
                         const scale = 1.5;
@@ -149,6 +197,52 @@
             }).catch(function(error) {
                 console.error('Error loading PDF:', error);
             });
+        }
+
+
+        function processPDF(pdfId) {
+            fetch(`/process_pdf/${pdfId}`, {
+                method: 'POST',
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log(data.message);
+                addMessage('system', 'PDF processed. You can now ask questions about it.');
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                addMessage('system', 'Sorry, an error occurred while processing the PDF.');
+            });
+        }
+
+        function queryPDF(query) {
+            fetch('/query_pdf', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({query: query}),
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    addMessage('system', `Error: ${data.error}`);
+                } else {
+                    addMessage('ai', data.response);
+                }
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                addMessage('system', 'Sorry, an error occurred while processing your request.');
+            });
+        }
+
+        function addMessage(sender, message) {
+            const messageElement = document.createElement('div');
+            messageElement.classList.add(sender);
+            messageElement.textContent = message;
+            chatMessages.appendChild(messageElement);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
         }
     });
 </script>

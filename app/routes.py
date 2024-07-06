@@ -1,5 +1,5 @@
 # from flask import current_app as app
-from flask import Blueprint, render_template, flash, redirect, url_for, request, current_app, send_file
+from flask import Blueprint, render_template, flash, redirect, url_for, request, current_app, send_file, jsonify, session, abort
 from flask_login import login_user, logout_user, current_user, login_required
 from urllib.parse import urlparse
 from app import db
@@ -7,35 +7,72 @@ from app.models import User, PDF
 from app import create_app
 import os
 from werkzeug.utils import secure_filename
+from app.pdf_processor import process_pdf, query_pdf
+import traceback
+from llama_index.core import load_index_from_storage, StorageContext
+from llama_index.core.tools import QueryEngineTool, ToolMetadata
+from llama_index.llms.openai import OpenAI
+from llama_index.core.agent import ReActAgent
 
 print("Routes are being registered")
 
 bp = Blueprint('main', __name__)
 
+@bp.route('/process_pdf/<int:pdf_id>', methods=['POST'])
+@login_required
+def process_pdf_route(pdf_id):
+    pdf = PDF.query.get_or_404(pdf_id)
+    if pdf.user_id != current_user.id:
+        return jsonify({"error": "Forbidden"}), 403
+    
+    index_name = process_pdf(pdf.path)
+    session['index_name'] = index_name
+    return jsonify({"message": "PDF processed successfully"})
+
+
+@bp.route('/query_pdf', methods=['POST'])
+@login_required
+def query_pdf_route():
+    data = request.json
+    query = data.get('query')
+    index_name = session.get('index_name')
+    
+    if not index_name:
+        return jsonify({"error": "No PDF processed yet"}), 400
+    
+    try:
+        result = query_pdf(index_name, query)
+        return jsonify({"response": result})
+    except Exception as e:
+        current_app.logger.error(f"Error querying PDF: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 @bp.route('/upload_pdf', methods=['GET', 'POST'])
 @login_required
 def upload_pdf():
-    if request.method == 'POST':
-        # check if the post request has the file part
-        if 'pdf_file' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
-        file = request.files['pdf_file']
-        # if user does not select file, browser also
-        # submit an empty part without filename
-        if file.filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
-            file.save(path)
-            new_pdf = PDF(filename=filename, path=path, user_id=current_user.id)
-            db.session.add(new_pdf)
-            db.session.commit()
-            flash('PDF uploaded successfully')
-            return redirect(url_for('main.dashboard'))
-    return render_template('upload_pdf.html')
+    # check if the post request has the file part
+    if 'pdf_file' not in request.files:
+        flash('No file part')
+        return redirect(url_for('main.dashboard'))
+    file = request.files['pdf_file']
+    # if user does not select file, browser also
+    # submit an empty part without filename
+    if file.filename == '':
+        flash('No selected file')
+        return redirect(url_for('main.dashboard'))
+    if file and allowed_file(file.filename):
+        filename = secure_filename(file.filename)
+        path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
+        file.save(path)
+        new_pdf = PDF(filename=filename, path=path, user_id=current_user.id)
+        db.session.add(new_pdf)
+        db.session.commit()
+        flash('PDF uploaded successfully')
+        return redirect(url_for('main.dashboard'))
+    else:
+        flash('Invalid file type')
+        return redirect(url_for('main.dashboard'))
+
 
 def allowed_file(filename):
     return '.' in filename and \
@@ -100,32 +137,11 @@ def logout():
     logout_user()
     return redirect(url_for('main.index'))
 
-@bp.route('/dashboard', methods=['GET', 'POST'])
+@bp.route('/dashboard')
 @login_required
 def dashboard():
-    if request.method == 'POST':
-        # check if the post request has the file part
-        if 'pdf_file' not in request.files:
-            flash('No file part')
-            return redirect(request.url)
-        file = request.files['pdf_file']
-        # if user does not select file, browser also
-        # submit an empty part without filename
-        if file.filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            path = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
-            file.save(path)
-            new_pdf = PDF(filename=filename, path=path, user_id=current_user.id)
-            db.session.add(new_pdf)
-            db.session.commit()
-            flash('PDF uploaded successfully')
-            return redirect(url_for('main.dashboard'))
-    
-    user_pdfs = PDF.query.filter_by(user_id=current_user.id).all()
-    return render_template('dashboard.html', title='Dashboard', pdfs=user_pdfs)
+    pdfs = PDF.query.filter_by(user_id=current_user.id).all()
+    return render_template('dashboard.html', pdfs=pdfs)
 
 @bp.route('/delete_pdf/<int:pdf_id>', methods=['POST'])
 @login_required
